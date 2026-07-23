@@ -54,10 +54,11 @@ cc(chop2, [139, 90, 43, 255]);
 cc(ground, [80, 160, 40, 255]);
 
 // === 鸟 sprite (全部MJ出图 — 需要remove.bg抠底!) ===
-const SP = "https://cdn.jsdelivr.net/gh/jiayihe096-sudo/nus-bird-audio@master/";
+const SP = "https://raw.githubusercontent.com/jiayihe096-sudo/nus-bird-audio/master/";
 const sprites = [];
 // 0=黄臀鹎 1=八哥 2=麻雀 3=斑鸠 4=猫头鹰 5=鸡 6=鸽子A 7=鸽子B
-const F = ["bulbul.png","myna.png","sparrow.png","zebra_dove.png","owl.png","junglefowl.png","pigeon_a.png","pigeon_b.png"];
+const CACHE = "?ts=" + "0cfd2a1";
+const F = ["bulbul.png"+CACHE,"myna.png"+CACHE,"sparrow.png"+CACHE,"zebra_dove.png"+CACHE,"owl.png"+CACHE,"junglefowl.png"+CACHE,"pigeon_a.png"+CACHE,"pigeon_b.png"+CACHE];
 for (let i = 0; i < 8; i = i + 1) {
     sprites[i] = create_sprite(SP + F[i]);
     off(sprites[i]);
@@ -85,7 +86,7 @@ const ebt = create_rectangle(120, 36); off(ebt); cc(ebt, [255,152,0,255]);
 const ebtt = create_text("RESTART"); off(ebtt);
 
 // === 音频 ===
-const V = SP;
+const V = "https://raw.githubusercontent.com/jiayihe096-sudo/nus-bird-audio/master/";
 const FL = ["bird_01_bulbul.mp3","bird_02_myna.mp3","bird_03_sparrow.mp3",
             "bird_04_zebra_dove.mp3","bird_05_owl.mp3","bird_06_junglefowl.mp3",
             "bird_08_pigeon_b.mp3","bird_07_pigeon_a.mp3"];
