@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NUS 校园寻鸟游戏 — NUS Bird Finder</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a1a2e;
+  display: flex; justify-content: center; align-items: center;
+  min-height: 100vh; font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  user-select: none; overflow: hidden;
+}
+.game-wrapper {
+  position: relative;
+  border-radius: 16px; overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+}
+canvas { display: block; cursor: default; }
+canvas.clickable { cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="game-wrapper">
+  <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+// ============================================================
+//  NUS 校园寻鸟游戏 — NUS Bird Finder
+//  适配 Source Academy (Source §4+) 及浏览器环境
+// ============================================================
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// ---- 画布尺寸 ----
+const W = 900, H = 600;
+canvas.width = W; canvas.height = H;
+
+// ---- 音效引擎: 预加载真实鸟叫 mp3 ----
+const AUDIO_FILES = {
+  bulbul:     'bird_01_bulbul.mp3',
+  myna:       'bird_02_myna.mp3',
+  sparrow:    'bird_03_sparrow.mp3',
+  zebraDove:  'bird_04_zebra_dove.mp3',
+  owl:        'bird_05_owl.mp3',
+  junglefowl: 'bird_06_junglefowl.mp3',
+  pigeonA:    'bird_07_pigeon_a.mp3',
+  pigeonB:    'bird_08_pigeon_b.mp3',
+};
+const audioCache = {};
+// 预加载全部音频
+Object.keys(AUDIO_FILES).forEach(key => {
+  const a = new Audio(AUDIO_FILES[key]);
+  a.preload = 'auto';
+  audioCache[key] = a;
+});
+
+function playBirdSound(birdKey) {
+  const a = audioCache[birdKey];
+  if (a) {
+    a.currentTime = 0;
+    a.play().catch(e => console.log('Audio play:', e.message));
+  }
+}
+
+// ---- 全局游戏状态 ----
+const gameState = {
+  currentScene: 'lawn',
+  birds: {
+    bulbul:     { found: false, scene: 'lawn' },
+    myna:       { found: false, scene: 'lawn' },
+    sparrow:    { found: false, scene: 'lawn' },
+    zebraDove:  { found: false, scene: 'lawn' },
+    owl:        { found: false, scene: 'lawn' },
+    junglefowl: { found: false, scene: 'canteen' },
+    pigeonA:    { found: false, scene: 'canteen', storyTriggered: false },
+    pigeonB:    { found: false, scene: 'canteen' },
+  },
+  startTime: null,
+  missClicks: 0,
+  gameComplete: false,
+  // UI 状态
+  activePanel: null,     // 当前打开的鸟面板 (birdKey or null)
+  panelAnimProgress: 0,  // 面板动画 0->1
+  counterBounce: 0,      // 计数器缩放动画
+};
+
+// ---- 定义每只鸟的基础信息 ----
+const BIRD_INFO = {
+  bulbul:     { nameZh: '黄臀鹎',    nameEn: 'Yellow-vented Bulbul',  desc: '新加坡最常见的鸣禽之一。头顶深褐，背部棕灰，臀部鲜黄色，叫声清脆上扬。常在树冠活动，以果实和昆虫为食。', difficulty: 1 },
+  myna:       { nameZh: '爪哇八哥',  nameEn: 'Javan Myna',             desc: '原产爪哇岛，引入后在新加坡广泛分布。全身深灰近黑，眼周有鲜黄色裸皮斑块。性格大胆，常在草地和露天餐厅觅食。叫声响亮多变，擅长模仿。', difficulty: 1 },
+  sparrow:    { nameZh: '家麻雀',    nameEn: 'Eurasian Tree Sparrow',  desc: '体型小巧，头顶栗色，脸颊白色带黑斑。喜欢成群活动于草丛和灌木丛中。在新加坡的公园和校园里随处可见，以种子和小昆虫为食。', difficulty: 2 },
+  zebraDove:  { nameZh: '斑姬地鸠',  nameEn: 'Zebra Dove',             desc: '体型纤长，灰褐色羽毛，颈侧有黑白相间的细密条纹如斑马纹。常在地面觅食，走路时点头的步态很可爱。叫声为低沉重复的"咕咕"声。', difficulty: 2 },
+  owl:        { nameZh: '领角鸮',    nameEn: 'Collared Scops Owl',     desc: '小型猫头鹰，有耳簇羽。羽毛灰棕斑驳如树皮，白天藏在树洞里只露出半张脸。两只大圆眼睛是发现它的关键！夜间活动，以昆虫和小型脊椎动物为食。', difficulty: 4 },
+  junglefowl: { nameZh: '红原鸡',    nameEn: 'Red Junglefowl',         desc: '家鸡的野生祖先！公鸡羽毛红棕金橙相间，头上有鲜红色肉冠。在新加坡的公园和自然保护区常见，NUS校园里也能看到它们大摇大摆地散步。', difficulty: 3 },
+  pigeonA:    { nameZh: '鸽子 A',    nameEn: 'Rock Pigeon',             desc: '原鸽的后代，在城市里无处不在。灰蓝色羽毛，颈部有彩虹般闪光的羽毛。这只鸽子从天而降，精准地落在餐桌上——看来它也是个美食家！', difficulty: 2 },
+  pigeonB:    { nameZh: '鸽子 B',    nameEn: 'Rock Pigeon',             desc: '另一只鸽子，直接可见。灰蓝色羽毛配彩虹颈环。鸽子有惊人的导航能力，能飞行数百公里找到回家的路。这只似乎对 COM3 的餐桌特别感兴趣。', difficulty: 1 },
+};
+
+// ---- 场景中每只鸟的位置和包围矩形 ----
+// 返回当前场景的活跃鸟列表（未找到的）
+function getActiveBirds() {
+  const scene = gameState.currentScene;
+  const all = {
+    lawn: [
+      { key: 'bulbul',    x: 580, y: 70,  w: 60, h: 45, hidden: 'leaves',   hidePct: 0.3 },
+      { key: 'myna',      x: 350, y: 395, w: 55, h: 40, hidden: 'grass',    hidePct: 0.2 },
+      { key: 'sparrow',   x: 200, y: 360, w: 40, h: 30, hidden: 'bush',     hidePct: 0.5 },
+      { key: 'zebraDove', x: 680, y: 320, w: 55, h: 40, hidden: 'flowers',  hidePct: 0.4 },
+      { key: 'owl',       x: 130, y: 280, w: 50, h: 50, hidden: 'treehole', hidePct: 0.55 },
+    ],
+    canteen: [
+      { key: 'junglefowl', x: 620, y: 370, w: 70, h: 55, hidden: null,   hidePct: 0.2 },
+      { key: 'pigeonA',    x: 350, y: 250, w: 50, h: 40, hidden: null,   hidePct: 0,
+        // pigeonA 初始不可见，直到剧情触发
+        get visible() { return gameState.birds.pigeonA.storyTriggered && !gameState.birds.pigeonA.found; } },
+      { key: 'pigeonB',    x: 750, y: 220, w: 50, h: 40, hidden: null,   hidePct: 0.15 },
+    ],
+  };
+  return all[scene].filter(b => {
+    if (b.key === 'pigeonA') return b.visible;
+    return !gameState.birds[b.key].found;
+  });
+}
+
+// ---- 鸽子A剧情状态 ----
+let pigeonStory = {
+  phase: 'idle',       // idle | bubble | waiting | dropping | done
+  bubbleTimer: 0,
+  bubbleAlpha: 0,
+  pigeonY: -100,
+  personGone: false,
+  personX: 440, personY: 310,
+};
+
+// ---- 工具函数 ----
+function rectOverlap(x, y, rx, ry, rw, rh) {
+  return x >= rx && x <= rx + rw && y >= ry && y <= ry + rh;
+}
+
+// ---- 背景绘制: 场景A 中央大草坪 ----
+function drawLawnBackground() {
+  const c = ctx;
+  // 天空渐变
+  const skyGrad = c.createLinearGradient(0, 0, 0, 350);
+  skyGrad.addColorStop(0, '#87CEEB');
+  skyGrad.addColorStop(0.6, '#B8E4F0');
+  skyGrad.addColorStop(1, '#E0F0E8');
+  c.fillStyle = skyGrad;
+  c.fillRect(0, 0, W, 420);
+
+  // 远处云
+  drawCloud(120, 45, 0.8);
+  drawCloud(550, 70, 0.6);
+  drawCloud(780, 30, 0.9);
+
+  // 远处树影 (背景)
+  c.fillStyle = '#6B9B4A';
+  drawTreeShape(820, 300, 80, 140);
+
+  // 草坪
+  const lawnGrad = c.createLinearGradient(0, 350, 0, 600);
+  lawnGrad.addColorStop(0, '#7CB342');
+  lawnGrad.addColorStop(0.3, '#6A9F33');
+  lawnGrad.addColorStop(1, '#4A7C2E');
+  c.fillStyle = lawnGrad;
+  c.fillRect(0, 350, W, 250);
+
+  // 草坪纹理
+  c.strokeStyle = '#5D8A2E';
+  c.lineWidth = 1;
+  for (let i = 0; i < 80; i++) {
+    const gx = (i * 13 + 7) % W;
+    const gy = 360 + (i * 31) % 220;
+    c.beginPath();
+    c.moveTo(gx, gy);
+    c.lineTo(gx + 2, gy - 6 - (i % 5));
+    c.stroke();
+  }
+
+  // 主大树 (左侧)
+  drawBigTree(80, 380, 0.9);
+
+  // 小花坛
+  drawFlowerBed(620, 430, 120, 40);
+  drawFlowerBed(380, 470, 90, 35);
+  drawFlowerBed(720, 510, 100, 35);
+
+  // 草丛区域
+  drawBushCluster(180, 380, 60);
+  drawBushCluster(500, 400, 50);
+  drawBushCluster(300, 440, 45);
+
+  // 栏杆
+  drawFence(550, 380, 250);
+}
+
+function drawCloud(x, y, scale) {
+  const c = ctx;
+  c.fillStyle = 'rgba(255,255,255,0.85)';
+  c.beginPath();
+  c.arc(x, y, 25 * scale, 0, Math.PI * 2);
+  c.arc(x + 20 * scale, y - 12 * scale, 20 * scale, 0, Math.PI * 2);
+  c.arc(x + 40 * scale, y, 22 * scale, 0, Math.PI * 2);
+  c.arc(x + 15 * scale, y + 8 * scale, 18 * scale, 0, Math.PI * 2);
+  c.fill();
+}
+
+function drawTreeShape(x, y, w, h) {
+  const c = ctx;
+  // 树干
+  c.fillStyle = '#8B6914';
+  c.fillRect(x + w * 0.35, y + h * 0.5, w * 0.3, h * 0.5);
+  // 树冠
+  c.fillStyle = '#5A8F3C';
+  c.beginPath();
+  c.arc(x + w * 0.5, y + h * 0.35, w * 0.45, 0, Math.PI * 2);
+  c.arc(x + w * 0.25, y + h * 0.45, w * 0.3, 0, Math.PI * 2);
+  c.arc(x + w * 0.75, y + h * 0.45, w * 0.3, 0, Math.PI * 2);
+  c.fill();
+}
+
+function drawBigTree(x, y, scale) {
+  const c = ctx;
+  // 树干
+  c.fillStyle = '#8B6914';
+  c.beginPath();
+  c.moveTo(x - 18 * scale, y);
+  c.lineTo(x - 12 * scale, y - 160 * scale);
+  c.lineTo(x + 12 * scale, y - 160 * scale);
+  c.lineTo(x + 18 * scale, y);
+  c.closePath();
+  c.fill();
+  // 树干纹理
+  c.strokeStyle = '#6B4F12';
+  c.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    const ty = y - 30 * i * scale;
+    c.beginPath();
+    c.moveTo(x - 14 * scale, ty);
+    c.quadraticCurveTo(x, ty + 5, x + 14 * scale, ty);
+    c.stroke();
+  }
+  // 树洞
+  drawTreeHole(x - 4, y - 135 * scale, 25 * scale, 30 * scale);
+
+  // 树冠大圆
+  const canopyColors = ['#4A8B2C', '#5C9E3A', '#3D7A22', '#6BAF3F'];
+  for (let i = 0; i < 20; i++) {
+    const cx = x + (Math.sin(i * 1.3) * 70) * scale;
+    const cy = y - 150 * scale + (Math.cos(i * 0.9) * 60) * scale;
+    const cr = (25 + (i % 5) * 8) * scale;
+    c.fillStyle = canopyColors[i % 4];
+    c.beginPath();
+    c.arc(cx, cy, cr, 0, Math.PI * 2);
+    c.fill();
+  }
+  // 树叶细节
+  c.fillStyle = '#3D7A22';
+  for (let i = 0; i < 30; i++) {
+    const lx = x - 60 * scale + i * 4.5 * scale;
+    const ly = y - 170 * scale + Math.sin(i * 0.7) * 30 * scale;
+    c.beginPath();
+    c.ellipse(lx, ly, 8 * scale, 4 * scale, 0.2 * i, 0, Math.PI * 2);
+    c.fill();
+  }
+}
+
+function drawTreeHole(x, y, w, h) {
+  const c = ctx;
+  // 洞内深色
+  c.fillStyle = '#2A1A0A';
+  c.beginPath();
+  c.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+  c.fill();
+  // 树皮边缘
+  c.strokeStyle = '#6B4F12';
+  c.lineWidth = 3;
+  c.beginPath();
+  c.ellipse(x + w / 2, y + h / 2, w / 2 + 2, h / 2 + 2, 0, 0, Math.PI * 2);
+  c.stroke();
+}
+
+function drawFlowerBed(x, y, w, h) {
+  const c = ctx;
+  // 泥土
+  c.fillStyle = '#6B4226';
+  c.beginPath();
+  c.roundRect(x, y, w, h, 10);
+  c.fill();
+  // 花朵
+  const flowerColors = ['#FF6B6B', '#FFD93D', '#FF8E8E', '#FFE66D', '#FF9999', '#FFF176'];
+  for (let i = 0; i < 8; i++) {
+    const fx = x + 8 + (i * w / 7);
+    const fy = y + h / 2 - Math.sin(i * 1.5) * h / 3;
+    c.fillStyle = flowerColors[i % flowerColors.length];
+    for (let p = 0; p < 5; p++) {
+      const angle = (p / 5) * Math.PI * 2;
+      c.beginPath();
+      c.arc(fx + Math.cos(angle) * 4, fy + Math.sin(angle) * 4, 3, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.fillStyle = '#FFA000';
+    c.beginPath();
+    c.arc(fx, fy, 2, 0, Math.PI * 2);
+    c.fill();
+  }
+  // 绿叶
+  c.fillStyle = '#388E3C';
+  for (let i = 0; i < 10; i++) {
+    const lx = x + i * (w / 9);
+    const ly = y + h - 4;
+    c.beginPath();
+    c.ellipse(lx, ly, 4, 2, 0.3, 0, Math.PI * 2);
+    c.fill();
+  }
+}
+
+function drawBushCluster(x, y, size) {
+  const c = ctx;
+  const bushColors = ['#3D7A22', '#4A8B2C', '#33691E', '#558B2F'];
+  for (let i = 0; i < 5; i++) {
+    const bx = x + Math.sin(i * 1.2) * size * 0.4;
+    const by = y + Math.cos(i * 0.8) * size * 0.2;
+    const br = size * (0.2 + i * 0.03);
+    c.fillStyle = bushColors[i % 4];
+    c.beginPath();
+    c.arc(bx, by, br, 0, Math.PI * 2);
+    c.fill();
+  }
+  // 草丛
+  c.strokeStyle = '#33691E';
+  c.lineWidth = 2;
+  for (let i = 0; i < 15; i++) {
+    const gx = x - size * 0.3 + i * (size * 0.06);
+    c.beginPath();
+    c.moveTo(gx, y + size * 0.15);
+    c.quadraticCurveTo(gx + 2, y - size * 0.15 - i * 0.5, gx + 5, y - size * 0.2 - i * 0.3);
+    c.stroke();
+  }
+}
+
+function drawFence(x, y, w) {
+  const c = ctx;
+  c.strokeStyle = '#8D6E63';
+  c.lineWidth = 3;
+  // 横梁
+  c.beginPath(); c.moveTo(x, y - 5); c.lineTo(x + w, y - 5); c.stroke();
+  c.beginPath(); c.moveTo(x, y - 30); c.lineTo(x + w, y - 30); c.stroke();
+  // 竖桩
+  c.fillStyle = '#A1887F';
+  for (let i = 0; i < 8; i++) {
+    const fx = x + i * (w / 7);
+    c.fillRect(fx - 3, y - 50, 6, 50);
+    c.beginPath();
+    c.moveTo(fx, y - 50);
+    c.lineTo(fx - 4, y - 58);
+    c.lineTo(fx + 4, y - 58);
+    c.closePath();
+    c.fill();
+  }
+}
+
+// ---- 背景绘制: 场景B COM3餐厅 ----
+function drawCanteenBackground() {
+  const c = ctx;
+  // 室内天花板
+  const ceilGrad = c.createLinearGradient(0, 0, 0, 200);
+  ceilGrad.addColorStop(0, '#F5F0E8');
+  ceilGrad.addColorStop(1, '#E8E0D0');
+  c.fillStyle = ceilGrad;
+  c.fillRect(0, 0, W, 200);
+
+  // 墙壁
+  c.fillStyle = '#EFEBE0';
+  c.fillRect(0, 200, W, 150);
+
+  // 地板
+  const floorGrad = c.createLinearGradient(0, 350, 0, 600);
+  floorGrad.addColorStop(0, '#C4B8A8');
+  floorGrad.addColorStop(1, '#A89880');
+  c.fillStyle = floorGrad;
+  c.fillRect(0, 350, W, 250);
+
+  // 地砖纹理
+  c.strokeStyle = '#B8A890';
+  c.lineWidth = 1;
+  for (let i = 0; i < 10; i++) {
+    c.beginPath();
+    c.moveTo(i * 100, 350); c.lineTo(i * 100, 600);
+    c.stroke();
+  }
+  for (let j = 0; j < 3; j++) {
+    c.beginPath();
+    c.moveTo(0, 350 + j * 80); c.lineTo(W, 350 + j * 80);
+    c.stroke();
+  }
+
+  // 建筑轮廓: COM3 外景透过窗户
+  c.fillStyle = '#A8C8E0';
+  c.fillRect(0, 0, W, 80); // 上部窗户区域
+
+  // 窗户
+  for (let i = 0; i < 5; i++) {
+    const wx = 80 + i * 170;
+    c.fillStyle = '#87CEEB';
+    c.fillRect(wx, 10, 120, 80);
+    // 窗框
+    c.strokeStyle = '#5D4037';
+    c.lineWidth = 3;
+    c.strokeRect(wx, 10, 120, 80);
+    c.beginPath();
+    c.moveTo(wx + 60, 10); c.lineTo(wx + 60, 90);
+    c.stroke();
+    c.beginPath();
+    c.moveTo(wx, 50); c.lineTo(wx + 120, 50);
+    c.stroke();
+    // 窗外远处树木
+    c.fillStyle = '#7CB342';
+    c.beginPath();
+    c.arc(wx + 30, 60, 15, 0, Math.PI * 2);
+    c.arc(wx + 90, 55, 12, 0, Math.PI * 2);
+    c.fill();
+  }
+
+  // 餐厅招牌
+  c.fillStyle = '#5D4037';
+  c.fillRect(350, 95, 200, 35);
+  c.fillStyle = '#FFF8E1';
+  c.font = 'bold 18px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.textAlign = 'center';
+  c.fillText('🍽️ COM3 餐厅', 450, 120);
+
+  // 餐桌 (多张)
+  drawDiningTable(120, 410, 160, 80);
+  drawDiningTable(370, 400, 180, 85);
+  drawDiningTable(650, 415, 150, 75);
+  drawDiningTable(250, 510, 140, 70);
+  drawDiningTable(550, 505, 160, 75);
+  drawDiningTable(750, 500, 130, 65);
+
+  // 椅子
+  drawChair(60, 430);
+  drawChair(260, 430);
+  drawChair(300, 430);
+  drawChair(470, 420);
+  drawChair(550, 425);
+  drawChair(590, 440);
+  drawChair(710, 440);
+
+  // 栏杆
+  drawFence(0, 350, 900);
+}
+
+function drawDiningTable(x, y, w, h) {
+  const c = ctx;
+  c.fillStyle = '#A1887F';
+  c.beginPath();
+  c.roundRect(x, y, w, h, 8);
+  c.fill();
+  c.fillStyle = '#8D6E63';
+  c.fillRect(x + w / 2 - w * 0.35, y + h + 4, w * 0.7, 30); // 桌腿
+
+  // 餐盘
+  if (w > 120) {
+    c.fillStyle = '#FAFAFA';
+    c.beginPath();
+    c.arc(x + w * 0.3, y + h * 0.4, 15, 0, Math.PI * 2);
+    c.fill();
+    c.strokeStyle = '#E0E0E0';
+    c.lineWidth = 2;
+    c.stroke();
+  }
+  // 第二个餐盘（双人桌）
+  if (w > 140) {
+    c.fillStyle = '#FAFAFA';
+    c.beginPath();
+    c.arc(x + w * 0.7, y + h * 0.4, 15, 0, Math.PI * 2);
+    c.fill();
+    c.strokeStyle = '#E0E0E0';
+    c.lineWidth = 2;
+    c.stroke();
+  }
+}
+
+function drawChair(x, y) {
+  const c = ctx;
+  c.fillStyle = '#6D4C41';
+  c.fillRect(x, y - 30, 35, 30);       // 座面
+  c.fillRect(x + 5, y - 55, 25, 25);   // 靠背
+  c.fillStyle = '#5D4037';
+  c.fillRect(x + 2, y, 8, 25);         // 左腿
+  c.fillRect(x + 25, y, 8, 25);        // 右腿
+}
+
+// ---- 鸟类代码绘制函数 ----
+
+function drawBulbul(x, y, scale) {
+  const c = ctx, s = scale || 1;
+  // 身体
+  c.fillStyle = '#8B6914';
+  c.beginPath(); c.ellipse(x, y, 20 * s, 13 * s, 0.1, 0, Math.PI * 2); c.fill();
+  // 头
+  c.fillStyle = '#6B4F12';
+  c.beginPath(); c.arc(x + 16 * s, y - 8 * s, 10 * s, 0, Math.PI * 2); c.fill();
+  // 黄色臀部
+  c.fillStyle = '#FFD600';
+  c.beginPath(); c.ellipse(x - 14 * s, y + 2 * s, 7 * s, 5 * s, 0, 0, Math.PI * 2); c.fill();
+  // 眼睛
+  c.fillStyle = '#000'; c.beginPath(); c.arc(x + 20 * s, y - 10 * s, 2.5 * s, 0, Math.PI * 2); c.fill();
+  // 喙
+  c.fillStyle = '#333'; c.beginPath();
+  c.moveTo(x + 26 * s, y - 10 * s); c.lineTo(x + 32 * s, y - 7 * s); c.lineTo(x + 26 * s, y - 6 * s); c.fill();
+  // 翅膀
+  c.fillStyle = '#7A5A10'; c.beginPath(); c.ellipse(x - 2 * s, y - 2 * s, 14 * s, 8 * s, -0.3, 0, Math.PI * 2); c.fill();
+}
+
+function drawMyna(x, y, scale) {
+  const c = ctx, s = scale || 1;
+  c.fillStyle = '#3A3A3A';
+  c.beginPath(); c.ellipse(x, y, 21 * s, 14 * s, 0, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#2A2A2A';
+  c.beginPath(); c.arc(x + 14 * s, y - 10 * s, 11 * s, 0, Math.PI * 2); c.fill();
+  // 黄色眼斑
+  c.fillStyle = '#FFB300';
+  c.beginPath(); c.arc(x + 16 * s, y - 13 * s, 4 * s, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#000';
+  c.beginPath(); c.arc(x + 17 * s, y - 13 * s, 2 * s, 0, Math.PI * 2); c.fill();
+  // 喙
+  c.fillStyle = '#FF8F00';
+  c.beginPath();
+  c.moveTo(x + 25 * s, y - 10 * s); c.lineTo(x + 33 * s, y - 7 * s); c.lineTo(x + 25 * s, y - 5 * s); c.fill();
+  // 翅膀
+  c.fillStyle = '#2E2E2E';
+  c.beginPath(); c.ellipse(x, y, 16 * s, 9 * s, -0.2, 0, Math.PI * 2); c.fill();
+  // 尾
+  c.fillStyle = '#2A2A2A';
+  c.beginPath(); c.moveTo(x - 18 * s, y); c.lineTo(x - 30 * s, y - 5 * s); c.lineTo(x - 28 * s, y + 3 * s); c.fill();
+}
+
+function drawSparrow(x, y, scale) {
+  const c = ctx, s = scale || 1;
+  c.fillStyle = '#A0522D';
+  c.beginPath(); c.ellipse(x, y, 14 * s, 10 * s, 0, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#8B4513';
+  c.beginPath(); c.arc(x + 10 * s, y - 7 * s, 8 * s, 0, Math.PI * 2); c.fill();
+  // 白颊
+  c.fillStyle = '#F5F5DC';
+  c.beginPath(); c.arc(x + 12 * s, y - 4 * s, 5 * s, 0, Math.PI * 2); c.fill();
+  // 眼
+  c.fillStyle = '#000';
+  c.beginPath(); c.arc(x + 13 * s, y - 9 * s, 1.8 * s, 0, Math.PI * 2); c.fill();
+  // 喙
+  c.fillStyle = '#555';
+  c.beginPath();
+  c.moveTo(x + 18 * s, y - 7 * s); c.lineTo(x + 23 * s, y - 5 * s); c.lineTo(x + 18 * s, y - 3 * s); c.fill();
+}
+
+function drawZebraDove(x, y, scale) {
+  const c = ctx, s = scale || 1;
+  c.fillStyle = '#8B8682';
+  c.beginPath(); c.ellipse(x, y, 20 * s, 13 * s, 0, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#A09894';
+  c.beginPath(); c.arc(x + 15 * s, y - 8 * s, 9 * s, 0, Math.PI * 2); c.fill();
+  // 颈斑纹
+  c.strokeStyle = '#2A2A2A';
+  c.lineWidth = 1.5 * s;
+  for (let i = 0; i < 6; i++) {
+    c.beginPath();
+    c.moveTo(x + 6 * s + i * 3 * s, y - 2 * s);
+    c.lineTo(x + 5 * s + i * 3 * s, y + 4 * s);
+    c.stroke();
+  }
+  c.strokeStyle = '#FFF';
+  for (let i = 0; i < 5; i++) {
+    c.beginPath();
+    c.moveTo(x + 7 * s + i * 3 * s, y - 1 * s);
+    c.lineTo(x + 6 * s + i * 3 * s, y + 3 * s);
+    c.stroke();
+  }
+  // 眼
+  c.fillStyle = '#000'; c.beginPath(); c.arc(x + 18 * s, y - 10 * s, 2 * s, 0, Math.PI * 2); c.fill();
+  // 喙
+  c.fillStyle = '#444'; c.beginPath();
+  c.moveTo(x + 24 * s, y - 8 * s); c.lineTo(x + 30 * s, y - 6 * s); c.lineTo(x + 24 * s, y - 4 * s); c.fill();
+}
+
+function drawOwl(x, y, scale) {
+  const c = ctx, s = scale || 1;
+  // 半身隐藏在树洞中 — 只画眼睛和上半身
+  // 身体(上半)
+  c.fillStyle = '#6B5B4B';
+  c.beginPath(); c.arc(x, y, 18 * s, Math.PI, Math.PI * 2); c.fill();
+  c.fillStyle = '#7D6B5A';
+  c.beginPath(); c.arc(x, y - 2 * s, 16 * s, Math.PI, Math.PI * 2); c.fill();
+  // 头顶羽毛(耳簇)
+  c.fillStyle = '#5A4A3A';
+  c.beginPath(); c.moveTo(x - 8 * s, y - 14 * s); c.lineTo(x - 12 * s, y - 28 * s); c.lineTo(x - 4 * s, y - 16 * s); c.fill();
+  c.beginPath(); c.moveTo(x + 8 * s, y - 14 * s); c.lineTo(x + 12 * s, y - 28 * s); c.lineTo(x + 4 * s, y - 16 * s); c.fill();
+  // 大圆眼 (白底)
+  c.fillStyle = '#FFFEF0';
+  c.beginPath(); c.arc(x - 7 * s, y - 6 * s, 7 * s, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.arc(x + 7 * s, y - 6 * s, 7 * s, 0, Math.PI * 2); c.fill();
+  // 瞳孔 (超大)
+  c.fillStyle = '#1A1A00';
+  c.beginPath(); c.arc(x - 7 * s, y - 6 * s, 4.5 * s, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.arc(x + 7 * s, y - 6 * s, 4.5 * s, 0, Math.PI * 2); c.fill();
+  // 高光
+  c.fillStyle = '#FFF';
+  c.beginPath(); c.arc(x - 5 * s, y - 8 * s, 1.5 * s, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.arc(x + 9 * s, y - 8 * s, 1.5 * s, 0, Math.PI * 2); c.fill();
+  // 喙
+  c.fillStyle = '#444';
+  c.beginPath(); c.moveTo(x - 2 * s, y); c.lineTo(x + 2 * s, y); c.lineTo(x, y + 5 * s); c.fill();
+  // 眉毛羽毛
+  c.strokeStyle = '#A09080';
+  c.lineWidth = 2 * s;
+  c.beginPath(); c.arc(x - 7 * s, y - 4 * s, 8 * s, 0.8, 2.5); c.stroke();
+  c.beginPath(); c.arc(x + 7 * s, y - 4 * s, 8 * s, 0.6, 2.3); c.stroke();
+}
+
+function drawJunglefowl(x, y, scale) {
+  const c = ctx, s = scale || 1;
+  // 身体 (较大)
+  c.fillStyle = '#8B3A3A';
+  c.beginPath(); c.ellipse(x, y, 26 * s, 17 * s, 0, 0, Math.PI * 2); c.fill();
+  // 胸部金橙色
+  c.fillStyle = '#CC8833';
+  c.beginPath(); c.ellipse(x + 8 * s, y + 2 * s, 12 * s, 10 * s, 0.2, 0, Math.PI * 2); c.fill();
+  // 翅膀
+  c.fillStyle = '#7A2E2E';
+  c.beginPath(); c.ellipse(x - 3 * s, y, 20 * s, 11 * s, -0.3, 0, Math.PI * 2); c.fill();
+  // 头
+  c.fillStyle = '#A04030';
+  c.beginPath(); c.arc(x + 18 * s, y - 12 * s, 11 * s, 0, Math.PI * 2); c.fill();
+  // 红色冠
+  c.fillStyle = '#FF2020';
+  c.beginPath(); c.moveTo(x + 14 * s, y - 22 * s); c.lineTo(x + 10 * s, y - 35 * s); c.lineTo(x + 14 * s, y - 24 * s);
+  c.lineTo(x + 18 * s, y - 38 * s); c.lineTo(x + 18 * s, y - 24 * s);
+  c.lineTo(x + 22 * s, y - 36 * s); c.lineTo(x + 20 * s, y - 22 * s); c.closePath(); c.fill();
+  // 眼
+  c.fillStyle = '#FF8F00'; c.beginPath(); c.arc(x + 22 * s, y - 14 * s, 3 * s, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#000'; c.beginPath(); c.arc(x + 23 * s, y - 14 * s, 1.5 * s, 0, Math.PI * 2); c.fill();
+  // 喙
+  c.fillStyle = '#FF8F00';
+  c.beginPath(); c.moveTo(x + 29 * s, y - 12 * s); c.lineTo(x + 38 * s, y - 10 * s); c.lineTo(x + 29 * s, y - 7 * s); c.fill();
+  // 尾羽
+  c.fillStyle = '#2A1A0A';
+  c.beginPath(); c.moveTo(x - 23 * s, y - 5 * s); c.quadraticCurveTo(x - 45 * s, y - 20 * s, x - 42 * s, y + 5 * s);
+  c.quadraticCurveTo(x - 35 * s, y + 5 * s, x - 20 * s, y + 3 * s); c.fill();
+  // 腿
+  c.strokeStyle = '#8B6914'; c.lineWidth = 2.5 * s;
+  c.beginPath(); c.moveTo(x - 2 * s, y + 15 * s); c.lineTo(x - 4 * s, y + 32 * s); c.stroke();
+  c.beginPath(); c.moveTo(x + 6 * s, y + 15 * s); c.lineTo(x + 8 * s, y + 32 * s); c.stroke();
+}
+
+function drawPigeon(x, y, scale) {
+  const c = ctx, s = scale || 1;
+  // 身体
+  c.fillStyle = '#808080';
+  c.beginPath(); c.ellipse(x, y, 19 * s, 13 * s, 0, 0, Math.PI * 2); c.fill();
+  // 腹部浅色
+  c.fillStyle = '#A0A0A0';
+  c.beginPath(); c.ellipse(x + 2 * s, y + 3 * s, 12 * s, 8 * s, 0, 0, Math.PI * 2); c.fill();
+  // 头
+  c.fillStyle = '#707070';
+  c.beginPath(); c.arc(x + 16 * s, y - 8 * s, 9 * s, 0, Math.PI * 2); c.fill();
+  // 彩虹颈
+  const neckGrad = c.createLinearGradient(x + 10 * s, y - 4 * s, x + 18 * s, y + 10 * s);
+  neckGrad.addColorStop(0, '#9B59B6');
+  neckGrad.addColorStop(0.3, '#3498DB');
+  neckGrad.addColorStop(0.6, '#2ECC71');
+  neckGrad.addColorStop(1, '#808080');
+  c.fillStyle = neckGrad;
+  c.beginPath(); c.ellipse(x + 10 * s, y + 2 * s, 8 * s, 5 * s, 0.5, 0, Math.PI * 2); c.fill();
+  // 眼
+  c.fillStyle = '#FF6F00'; c.beginPath(); c.arc(x + 19 * s, y - 10 * s, 2.5 * s, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#000'; c.beginPath(); c.arc(x + 19.5 * s, y - 10 * s, 1.3 * s, 0, Math.PI * 2); c.fill();
+  // 喙
+  c.fillStyle = '#444';
+  c.beginPath(); c.moveTo(x + 25 * s, y - 8 * s); c.lineTo(x + 31 * s, y - 6 * s); c.lineTo(x + 25 * s, y - 4 * s); c.fill();
+  // 翅膀
+  c.fillStyle = '#6E6E6E';
+  c.beginPath(); c.ellipse(x - 2 * s, y - 2 * s, 14 * s, 9 * s, -0.2, 0, Math.PI * 2); c.fill();
+  // 尾
+  c.fillStyle = '#555';
+  c.beginPath(); c.moveTo(x - 16 * s, y); c.lineTo(x - 28 * s, y - 4 * s); c.lineTo(x - 26 * s, y + 4 * s); c.fill();
+}
+
+// ---- 绘制隐藏效果 (树叶/草丛遮挡) ----
+function drawHideEffect(birdDef) {
+  const c = ctx;
+  const { key, x, y, w, h, hidden, hidePct } = birdDef;
+  if (!hidden || hidePct <= 0) return;
+
+  if (hidden === 'leaves') {
+    c.fillStyle = '#3D7A22';
+    for (let i = 0; i < 5; i++) {
+      const lx = x - 10 + i * (w / 4);
+      const ly = y - 5 + (i % 2) * 8;
+      c.beginPath();
+      c.ellipse(lx, ly, 12, 7, 0.3 * i, 0, Math.PI * 2);
+      c.fill();
+    }
+  } else if (hidden === 'grass') {
+    c.strokeStyle = '#33691E';
+    c.lineWidth = 2;
+    for (let i = 0; i < 8; i++) {
+      const gx = x - w * 0.3 + i * (w * 0.12);
+      c.beginPath();
+      c.moveTo(gx, y + h * 0.3);
+      c.quadraticCurveTo(gx + 3, y - 5 - i * 2, gx + 6, y - 8 - i);
+      c.stroke();
+    }
+  } else if (hidden === 'bush') {
+    c.fillStyle = '#2E7D32';
+    for (let i = 0; i < 4; i++) {
+      c.beginPath();
+      c.arc(x - 8 + i * 12, y - 5, 9, 0, Math.PI * 2);
+      c.fill();
+    }
+  } else if (hidden === 'flowers') {
+    drawFlowerBed(x - 10, y - 5, w + 20, 25);
+  } else if (hidden === 'treehole') {
+    // 树洞绘制已在 drawBigTree 中完成，这里什么都不做
+  }
+}
+
+// ---- 绘制所有活跃鸟 ----
+function drawAllBirds() {
+  const active = getActiveBirds();
+  active.forEach(birdDef => {
+    drawHideEffect(birdDef);
+    const { key, x, y } = birdDef;
+    switch (key) {
+      case 'bulbul':     drawBulbul(x, y, 1); break;
+      case 'myna':       drawMyna(x, y, 1); break;
+      case 'sparrow':    drawSparrow(x, y, 1); break;
+      case 'zebraDove':  drawZebraDove(x, y, 1); break;
+      case 'owl':        drawOwl(x, y, 1); break;
+      case 'junglefowl': drawJunglefowl(x, y, 1); break;
+      case 'pigeonA':    drawPigeon(x, y, 1); break;
+      case 'pigeonB':    drawPigeon(x, y, 1); break;
+    }
+  });
+
+  // 如果鸽子A未触发且场景B中，画"吃饭的人"
+  if (gameState.currentScene === 'canteen' && !gameState.birds.pigeonA.storyTriggered && !pigeonStory.personGone) {
+    drawDiningPerson(pigeonStory.personX, pigeonStory.personY);
+  } else if (gameState.currentScene === 'canteen' && pigeonStory.personGone && gameState.birds.pigeonA.storyTriggered && !gameState.birds.pigeonA.found) {
+    drawDiningPerson(pigeonStory.personX, pigeonStory.personY, true);
+  }
+
+  // 鸽子剧情气泡
+  if (pigeonStory.phase === 'bubble' && pigeonStory.bubbleAlpha > 0) {
+    drawBubble(pigeonStory.personX, pigeonStory.personY - 50, pigeonStory.bubbleAlpha);
+  }
+
+  // 鸽子从天而降动画
+  if ((pigeonStory.phase === 'dropping' || pigeonStory.phase === 'done') && !gameState.birds.pigeonA.found) {
+    const pigeonAY = (pigeonStory.phase === 'dropping') ? pigeonStory.pigeonY : 250;
+    drawPigeon(350, pigeonAY, 1);
+  }
+}
+
+function drawDiningPerson(x, y, withUtensils) {
+  const c = ctx;
+  // 身体
+  c.fillStyle = '#1565C0';
+  c.beginPath(); c.roundRect(x - 12, y - 15, 24, 30, 6); c.fill();
+  // 头
+  c.fillStyle = '#FFCC80';
+  c.beginPath(); c.arc(x, y - 24, 11, 0, Math.PI * 2); c.fill();
+  // 头发
+  c.fillStyle = '#3E2723';
+  c.beginPath(); c.arc(x, y - 28, 12, Math.PI, Math.PI * 2); c.fill();
+  // 手臂
+  c.strokeStyle = '#FFCC80'; c.lineWidth = 4;
+  if (withUtensils) {
+    c.beginPath(); c.moveTo(x + 12, y - 10); c.lineTo(x + 22, y); c.stroke(); // 拿餐具的手伸出
+    c.strokeStyle = '#888'; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(x + 20, y - 2); c.lineTo(x + 28, y + 6); c.stroke(); // 筷子
+  } else {
+    c.beginPath(); c.moveTo(x + 12, y - 10); c.lineTo(x + 16, y + 5); c.stroke();
+    c.beginPath(); c.moveTo(x - 12, y - 10); c.lineTo(x - 16, y + 5); c.stroke();
+    // 手机? 吃饭看手机
+    c.fillStyle = '#333';
+    c.fillRect(x + 13, y - 2, 8, 12);
+  }
+  // 餐盘前
+  c.fillStyle = '#FFF';
+  c.beginPath(); c.arc(x + 5, y + 6, 10, 0, Math.PI * 2); c.fill();
+}
+
+function drawBubble(x, y, alpha) {
+  const c = ctx;
+  c.save();
+  c.globalAlpha = alpha;
+  c.fillStyle = '#FFF';
+  c.strokeStyle = '#CCC';
+  c.lineWidth = 2;
+  c.beginPath();
+  c.ellipse(x, y, 30, 22, 0, 0, Math.PI * 2);
+  c.fill(); c.stroke();
+  // 气泡尾巴
+  c.fillStyle = '#FFF';
+  c.beginPath();
+  c.moveTo(x - 10, y + 20);
+  c.lineTo(x - 20, y + 35);
+  c.lineTo(x + 2, y + 18);
+  c.fill();
+  // 气泡内 emoji
+  c.fillStyle = '#333';
+  c.font = '20px sans-serif';
+  c.textAlign = 'center';
+  c.fillText('🥄', x, y + 7);
+  c.restore();
+}
+
+// ---- 右上角计数器 ----
+function drawCounter() {
+  const c = ctx;
+  const scene = gameState.currentScene;
+  const sceneTotal = scene === 'lawn' ? 5 : 3;
+  const found = scene === 'lawn'
+    ? ['bulbul','myna','sparrow','zebraDove','owl'].filter(k => gameState.birds[k].found).length
+    : ['junglefowl','pigeonA','pigeonB'].filter(k => gameState.birds[k].found).length;
+  const remaining = sceneTotal - found;
+
+  // 小鸟图标
+  const bx = W - 140, by = 30;
+  const bounceScale = 1 + gameState.counterBounce * 0.3;
+  c.save();
+  c.translate(bx + 15, by + 12);
+  c.scale(bounceScale, bounceScale);
+  c.translate(-(bx + 15), -(by + 12));
+
+  // 画小鸟图标
+  c.fillStyle = '#FFD600';
+  c.beginPath(); c.arc(bx + 15, by + 8, 8, 0, Math.PI * 2); c.fill(); // 身体
+  c.fillStyle = '#FF8F00';
+  c.beginPath(); c.arc(bx + 8, by + 16, 5, 0, Math.PI * 2); c.fill();   // 头
+  c.fillStyle = '#000';
+  c.beginPath(); c.arc(bx + 6, by + 15, 1.5, 0, Math.PI * 2); c.fill(); // 眼
+  c.fillStyle = '#FFB300';
+  c.beginPath(); c.moveTo(bx + 3, by + 16); c.lineTo(bx - 1, by + 18); c.lineTo(bx + 3, by + 19); c.fill();
+
+  c.restore();
+
+  // 文字
+  c.fillStyle = '#FFF';
+  c.font = 'bold 16px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.textAlign = 'left';
+  c.fillText(`× ${remaining}`, bx + 28, by + 16);
+}
+
+// ---- 场景切换按钮 ----
+function drawSceneButtons() {
+  const c = ctx;
+  const lawnFound = ['bulbul','myna','sparrow','zebraDove','owl'].filter(k => gameState.birds[k].found).length;
+  const canteenFound = ['junglefowl','pigeonA','pigeonB'].filter(k => gameState.birds[k].found).length;
+
+  const buttons = [
+    { label: `🌿 中央大草坪 (${lawnFound}/5)`, scene: 'lawn', x: 180, y: H - 45, w: 220, h: 36 },
+    { label: `🍽️ COM3 餐厅 (${canteenFound}/3)`, scene: 'canteen', x: 500, y: H - 45, w: 220, h: 36 },
+  ];
+
+  buttons.forEach(btn => {
+    const active = gameState.currentScene === btn.scene;
+    c.fillStyle = active ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.55)';
+    c.strokeStyle = active ? '#4CAF50' : 'rgba(255,255,255,0.3)';
+    c.lineWidth = active ? 3 : 1;
+    c.beginPath();
+    c.roundRect(btn.x, btn.y, btn.w, btn.h, 20);
+    c.fill();
+    c.stroke();
+
+    c.fillStyle = active ? '#2E7D32' : '#555';
+    c.font = '14px "PingFang SC","Microsoft YaHei",sans-serif';
+    c.textAlign = 'center';
+    c.fillText(btn.label, btn.x + btn.w / 2, btn.y + btn.h / 2 + 5);
+
+    // 存储按钮位置用于点击检测
+    btn._rect = { x: btn.x, y: btn.y, w: btn.w, h: btn.h };
+  });
+
+  return buttons;
+}
+
+// ---- 介绍弹窗 ----
+function drawInfoPanel() {
+  if (!gameState.activePanel) return;
+  const c = ctx;
+  const birdKey = gameState.activePanel;
+  const info = BIRD_INFO[birdKey];
+  const progress = Math.min(1, gameState.panelAnimProgress);
+
+  // 遮罩
+  c.fillStyle = `rgba(0,0,0,${0.5 * progress})`;
+  c.fillRect(0, 0, W, H);
+
+  // 弹窗
+  const pw = 380, ph = 260;
+  const px = (W - pw) / 2, py = (H - ph) / 2;
+  const scale = 0.8 + 0.2 * progress;
+  c.save();
+  c.translate(W / 2, H / 2);
+  c.scale(scale, scale);
+  c.translate(-W / 2, -H / 2);
+
+  c.fillStyle = '#FFFEF9';
+  c.strokeStyle = '#8D6E63';
+  c.lineWidth = 3;
+  c.beginPath();
+  c.roundRect(px, py, pw, ph, 16);
+  c.fill();
+  c.stroke();
+
+  // 标题
+  c.fillStyle = '#3E2723';
+  c.font = 'bold 22px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.textAlign = 'center';
+  c.fillText(`${info.nameZh}`, px + pw / 2, py + 35);
+  c.fillStyle = '#795548';
+  c.font = 'italic 14px "Segoe UI",sans-serif';
+  c.fillText(info.nameEn, px + pw / 2, py + 56);
+
+  // 分隔线
+  c.strokeStyle = '#D7CCC8';
+  c.lineWidth = 1;
+  c.beginPath();
+  c.moveTo(px + 30, py + 68);
+  c.lineTo(px + pw - 30, py + 68);
+  c.stroke();
+
+  // 描述文字 (自动换行)
+  c.fillStyle = '#4E342E';
+  c.font = '14px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.textAlign = 'left';
+  const words = info.desc;
+  const maxWidth = pw - 60;
+  let lineY = py + 95;
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const test = line + words[i];
+    if (c.measureText(test).width > maxWidth && line.length > 0) {
+      c.fillText(line, px + 30, lineY);
+      line = words[i];
+      lineY += 22;
+    } else {
+      line = test;
+    }
+  }
+  if (line) c.fillText(line, px + 30, lineY);
+
+  // 关闭按钮
+  const btnX = px + pw / 2 - 40, btnY = py + ph - 45, btnW = 80, btnH = 32;
+  c.fillStyle = '#4CAF50';
+  c.beginPath();
+  c.roundRect(btnX, btnY, btnW, btnH, 16);
+  c.fill();
+  c.fillStyle = '#FFF';
+  c.font = 'bold 14px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.textAlign = 'center';
+  c.fillText('关闭', btnX + btnW / 2, btnY + btnH / 2 + 5);
+
+  // 存按钮位置
+  gameState._closeBtn = { x: btnX, y: btnY, w: btnW, h: btnH };
+
+  c.restore();
+}
+
+// ---- 通关结算画面 ----
+function drawCompleteScreen() {
+  const c = ctx;
+  const totalTime = Math.floor((Date.now() - gameState.startTime) / 1000);
+  const score = Math.max(0, 1000 - totalTime * 2 - gameState.missClicks * 10);
+  let stars;
+  if (score >= 600) stars = '⭐⭐⭐';
+  else if (score >= 300) stars = '⭐⭐';
+  else stars = '⭐';
+
+  // 遮罩
+  c.fillStyle = 'rgba(0,0,0,0.7)';
+  c.fillRect(0, 0, W, H);
+
+  // 弹窗
+  const pw = 420, ph = 320;
+  const px = (W - pw) / 2, py = (H - ph) / 2;
+  c.fillStyle = '#FFFEF9';
+  c.strokeStyle = '#FFD600';
+  c.lineWidth = 4;
+  c.beginPath();
+  c.roundRect(px, py, pw, ph, 20);
+  c.fill();
+  c.stroke();
+
+  c.fillStyle = '#3E2723';
+  c.font = 'bold 24px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.textAlign = 'center';
+  c.fillText('🎉 恭喜！', px + pw / 2, py + 45);
+  c.font = 'bold 18px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.fillText('你找到了 NUS 所有常见鸟类！', px + pw / 2, py + 75);
+
+  // 统计
+  c.font = '16px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.textAlign = 'left';
+  const sx = px + 60;
+  c.fillText(`⏱️ 用时：${totalTime} 秒`, sx, py + 115);
+  c.fillText(`🎯 误点：${gameState.missClicks} 次`, sx, py + 142);
+  c.fillText(`📊 评分：${score} 分`, sx, py + 172);
+  c.fillText(`🏆 评级：${stars}`, sx, py + 205);
+
+  // 再玩一次
+  const btnX = px + pw / 2 - 60, btnY = py + ph - 55, btnW = 120, btnH = 38;
+  c.fillStyle = '#FF9800';
+  c.beginPath();
+  c.roundRect(btnX, btnY, btnW, btnH, 19);
+  c.fill();
+  c.fillStyle = '#FFF';
+  c.font = 'bold 16px "PingFang SC","Microsoft YaHei",sans-serif';
+  c.textAlign = 'center';
+  c.fillText('再玩一次', btnX + btnW / 2, btnY + btnH / 2 + 5);
+
+  gameState._replayBtn = { x: btnX, y: btnY, w: btnW, h: btnH };
+}
+
+// ---- 主循环 ----
+function drawGame() {
+  const c = ctx;
+  c.clearRect(0, 0, W, H);
+
+  // 背景
+  if (gameState.currentScene === 'lawn') {
+    drawLawnBackground();
+  } else {
+    drawCanteenBackground();
+  }
+
+  // 鸟类
+  drawAllBirds();
+
+  // UI层
+  drawCounter();
+  const buttons = drawSceneButtons();
+  drawInfoPanel();
+
+  // 通关结算 (覆盖在最上层)
+  if (gameState.gameComplete) {
+    drawCompleteScreen();
+  }
+
+  // 全局可点击区域: 场景按钮
+  gameState._sceneButtons = buttons;
+}
+
+// ---- 游戏循环 ----
+function gameLoop() {
+  drawGame();
+
+  // 计数器弹跳衰减
+  if (gameState.counterBounce > 0) {
+    gameState.counterBounce *= 0.85;
+    if (gameState.counterBounce < 0.01) gameState.counterBounce = 0;
+  }
+
+  // 面板动画
+  if (gameState.activePanel && gameState.panelAnimProgress < 1) {
+    gameState.panelAnimProgress += 0.12;
+    if (gameState.panelAnimProgress > 1) gameState.panelAnimProgress = 1;
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+// ---- 触发鸽子剧情 ----
+function triggerPigeonStory() {
+  if (pigeonStory.phase !== 'idle') return;
+  if (gameState.birds.pigeonA.found) return;
+
+  pigeonStory.phase = 'bubble';
+  pigeonStory.bubbleAlpha = 0;
+
+  // 弹出气泡
+  const fadeIn = setInterval(() => {
+    pigeonStory.bubbleAlpha += 0.08;
+    if (pigeonStory.bubbleAlpha >= 1) {
+      pigeonStory.bubbleAlpha = 1;
+      clearInterval(fadeIn);
+      // 气泡停留 1.5s
+      setTimeout(() => {
+        pigeonStory.bubbleAlpha = 0;
+        pigeonStory.personGone = true;
+        // 鸽子从天而降
+        pigeonStory.phase = 'dropping';
+        pigeonStory.pigeonY = -60;
+        const dropAnim = setInterval(() => {
+          pigeonStory.pigeonY += 15;
+          if (pigeonStory.pigeonY >= 250) {
+            pigeonStory.pigeonY = 250;
+            pigeonStory.phase = 'done';
+            gameState.birds.pigeonA.storyTriggered = true;
+            clearInterval(dropAnim);
+          }
+        }, 30);
+      }, 1500);
+    }
+  }, 20);
+}
+
+// ---- 查找点击到的鸟 ----
+function findBirdAt(mx, my) {
+  const active = getActiveBirds();
+  for (let i = active.length - 1; i >= 0; i--) {
+    const b = active[i];
+    if (rectOverlap(mx, my, b.x - b.w / 2, b.y - b.h / 2, b.w, b.h)) {
+      return b;
+    }
+  }
+  return null;
+}
+
+// ---- 点击处理 ----
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+
+  // 游戏完成 → 再玩一次？
+  if (gameState.gameComplete) {
+    if (gameState._replayBtn && rectOverlap(mx, my,
+        gameState._replayBtn.x, gameState._replayBtn.y,
+        gameState._replayBtn.w, gameState._replayBtn.h)) {
+      resetGame();
+    }
+    return;
+  }
+
+  // 面板打开 → 关闭按钮
+  if (gameState.activePanel && gameState._closeBtn) {
+    if (rectOverlap(mx, my,
+        gameState._closeBtn.x, gameState._closeBtn.y,
+        gameState._closeBtn.w, gameState._closeBtn.h)) {
+      gameState.activePanel = null;
+      gameState.panelAnimProgress = 0;
+      return;
+    }
+    return; // 面板打开期间屏蔽其他点击
+  }
+
+  // 鸽子剧情进行中 → 屏蔽
+  if (pigeonStory.phase === 'bubble' || pigeonStory.phase === 'dropping') return;
+
+  // 场景切换按钮
+  if (gameState._sceneButtons) {
+    for (const btn of gameState._sceneButtons) {
+      if (rectOverlap(mx, my, btn._rect.x, btn._rect.y, btn._rect.w, btn._rect.h)) {
+        if (gameState.currentScene !== btn.scene) {
+          gameState.currentScene = btn.scene;
+          // 切换时如果有面板，关闭
+          gameState.activePanel = null;
+          gameState.panelAnimProgress = 0;
+        }
+        return;
+      }
+    }
+  }
+
+  // 场景B：点击吃饭的人触发鸽子剧情
+  if (gameState.currentScene === 'canteen' &&
+      !gameState.birds.pigeonA.storyTriggered &&
+      !gameState.birds.pigeonA.found &&
+      pigeonStory.phase === 'idle') {
+    if (rectOverlap(mx, my, pigeonStory.personX - 15, pigeonStory.personY - 30, 35, 55)) {
+      triggerPigeonStory();
+      return;
+    }
+  }
+
+  // 检测鸟点击
+  const hit = findBirdAt(mx, my);
+  if (hit) {
+    // 点击到鸟
+    const birdKey = hit.key;
+    if (!gameState.birds[birdKey].found) {
+      gameState.birds[birdKey].found = true;
+      playBirdSound(birdKey);
+      gameState.activePanel = birdKey;
+      gameState.panelAnimProgress = 0;
+      gameState.counterBounce = 1;
+
+      // 检查是否全部找到
+      checkComplete();
+    }
+  } else {
+    // 误点（排除UI区域）
+    const inUI = gameState._sceneButtons && gameState._sceneButtons.some(b =>
+      rectOverlap(mx, my, b._rect.x, b._rect.y, b._rect.w, b._rect.h));
+    if (!inUI) {
+      gameState.missClicks++;
+    }
+  }
+});
+
+// ---- 检查游戏是否完成 ----
+function checkComplete() {
+  const allBirds = Object.keys(gameState.birds);
+  const allFound = allBirds.every(k => gameState.birds[k].found);
+  if (allFound && !gameState.gameComplete) {
+    gameState.gameComplete = true;
+    if (!gameState.startTime) gameState.startTime = Date.now() - 1;
+  }
+}
+
+// ---- 重置游戏 ----
+function resetGame() {
+  Object.keys(gameState.birds).forEach(k => {
+    gameState.birds[k].found = false;
+    if (k === 'pigeonA') gameState.birds[k].storyTriggered = false;
+  });
+  gameState.currentScene = 'lawn';
+  gameState.startTime = Date.now();
+  gameState.missClicks = 0;
+  gameState.gameComplete = false;
+  gameState.activePanel = null;
+  gameState.panelAnimProgress = 0;
+  gameState.counterBounce = 0;
+
+  pigeonStory.phase = 'idle';
+  pigeonStory.bubbleTimer = 0;
+  pigeonStory.bubbleAlpha = 0;
+  pigeonStory.pigeonY = -100;
+  pigeonStory.personGone = false;
+}
+
+// ---- 鼠标移动: 光标样式 ----
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+
+  if (gameState.activePanel || gameState.gameComplete || pigeonStory.phase === 'bubble' || pigeonStory.phase === 'dropping') {
+    canvas.style.cursor = 'default';
+    return;
+  }
+
+  // 场景按钮上
+  if (gameState._sceneButtons) {
+    for (const btn of gameState._sceneButtons) {
+      if (rectOverlap(mx, my, btn._rect.x, btn._rect.y, btn._rect.w, btn._rect.h)) {
+        canvas.style.cursor = 'pointer';
+        return;
+      }
+    }
+  }
+
+  // 鸟上
+  const hit = findBirdAt(mx, my);
+  if (hit) {
+    canvas.style.cursor = 'pointer';
+    return;
+  }
+
+  // 吃饭的人上
+  if (gameState.currentScene === 'canteen' &&
+      !gameState.birds.pigeonA.storyTriggered &&
+      pigeonStory.phase === 'idle') {
+    if (rectOverlap(mx, my, pigeonStory.personX - 15, pigeonStory.personY - 30, 35, 55)) {
+      canvas.style.cursor = 'pointer';
+      return;
+    }
+  }
+
+  // 关闭按钮上
+  if (gameState.activePanel && gameState._closeBtn &&
+      rectOverlap(mx, my, gameState._closeBtn.x, gameState._closeBtn.y, gameState._closeBtn.w, gameState._closeBtn.h)) {
+    canvas.style.cursor = 'pointer';
+    return;
+  }
+
+  canvas.style.cursor = 'default';
+});
+
+// ---- 启动游戏 ----
+function initGame() {
+  gameState.startTime = Date.now();
+  gameLoop();
+}
+
+// polyfill roundRect
+if (!ctx.roundRect) {
+  ctx.roundRect = function(x, y, w, h, r) {
+    if (typeof r === 'number') r = { tl: r, tr: r, br: r, bl: r };
+    this.beginPath();
+    this.moveTo(x + r.tl, y);
+    this.lineTo(x + w - r.tr, y);
+    this.quadraticCurveTo(x + w, y, x + w, y + r.tr);
+    this.lineTo(x + w, y + h - r.br);
+    this.quadraticCurveTo(x + w, y + h, x + w - r.br, y + h);
+    this.lineTo(x + r.bl, y + h);
+    this.quadraticCurveTo(x, y + h, x, y + h - r.bl);
+    this.lineTo(x, y + r.tl);
+    this.quadraticCurveTo(x, y, x + r.tl, y);
+    this.closePath();
+  };
+}
+
+initGame();
+console.log('🐦 NUS 校园寻鸟游戏已就绪！');
+console.log('场景A: 中央大草坪 — 5只鸟（黄臀鹎/爪哇八哥/家麻雀/斑姬地鸠/领角鸮）');
+console.log('场景B: COM3 餐厅 — 3只鸟（红原鸡/鸽子A/鸽子B）');
+console.log('💡 提示：场景B中点击"吃饭的人"触发隐藏剧情！');
+</script>
+</body>
+</html>
